@@ -22,21 +22,22 @@ type kvFsm struct {
 
 type setPayload struct {
 	Key   string
-	Value []byte
+	Value string
 }
 
 func (kf *kvFsm) Apply(log *raft.Log) any {
 	switch log.Type {
 	case raft.LogCommand:
 		var sp setPayload
+		fmt.Println(string(log.Data))
 		err := json.Unmarshal(log.Data, &sp)
 		if err != nil {
-			return fmt.Errorf("Could not parse payload: %w", err)
+			return fmt.Errorf("Could not parse payload: %s", err)
 		}
 
-		err = kf.db.Set([]byte(sp.Key), sp.Value, pebble.Sync)
+		err = kf.db.Set([]byte(sp.Key), []byte(sp.Value), pebble.Sync)
 		if err != nil {
-			return fmt.Errorf("Could not set key-value: %w", err)
+			return fmt.Errorf("Could not set key-value: %s", err)
 		}
 	default:
 		return fmt.Errorf("Unknown raft log type: %#v", log.Type)
@@ -64,10 +65,10 @@ func (kf *kvFsm) Restore(rc io.ReadCloser) error {
 		var sp setPayload
 		err := decoder.Decode(&sp)
 		if err != nil {
-			return fmt.Errorf("Could not decode payload: %w", err)
+			return fmt.Errorf("Could not decode payload: %s", err)
 		}
 
-		err = kf.db.Set([]byte(sp.Key), sp.Value, pebble.Sync)
+		err = kf.db.Set([]byte(sp.Key), []byte(sp.Value), pebble.Sync)
 		if err != nil {
 			return fmt.Errorf("Could not set")
 		}
@@ -76,30 +77,35 @@ func (kf *kvFsm) Restore(rc io.ReadCloser) error {
 	return rc.Close()
 }
 
-func setupRaft(dir, nodeId, raftPort string, kf *kvFsm) (*raft.Raft, error) {
-	store, err := raftboltdb.NewBoltStore(path.Join(dir, "raft_store"))
+func setupRaft(dir, nodeId, raftAddress string, kf *kvFsm) (*raft.Raft, error) {
+	os.MkdirAll(dir, os.ModePerm)
+
+	store, err := raftboltdb.NewBoltStore(path.Join(dir, "bolt"))
 	if err != nil {
-		return nil, fmt.Errorf("Could not create bolt store: %w", err)
+		return nil, fmt.Errorf("Could not create bolt store: %s", err)
 	}
 
-	snapshots, err := raft.NewFileSnapshotStore(path.Join(dir, "raft_snapshot"), 2, os.Stderr)
+	snapshots, err := raft.NewFileSnapshotStore(path.Join(dir, "snapshot"), 2, os.Stderr)
 	if err != nil {
-		return nil, fmt.Errorf("Could not create snapshot store: %w", err)
+		return nil, fmt.Errorf("Could not create snapshot store: %s", err)
 	}
 
-	tcpAddr, err := net.ResolveTCPAddr("tcp", raftPort)
+	tcpAddr, err := net.ResolveTCPAddr("tcp", raftAddress)
 	if err != nil {
-		return nil, fmt.Errorf("Could not resolve address: %w", err)
+		return nil, fmt.Errorf("Could not resolve address: %s", err)
 	}
 
-	transport, err := raft.NewTCPTransport(raftPort, tcpAddr, 10, time.Second*10, os.Stderr)
+	transport, err := raft.NewTCPTransport(raftAddress, tcpAddr, 10, time.Second*10, os.Stderr)
 	if err != nil {
-		return nil, fmt.Errorf("Could not create tcp transport: %w", err)
+		return nil, fmt.Errorf("Could not create tcp transport: %s", err)
 	}
 
-	r, err := raft.NewRaft(raft.DefaultConfig(), kf, store, store, snapshots, transport)
+	raftCfg := raft.DefaultConfig()
+	raftCfg.LocalID = raft.ServerID(nodeId)
+
+	r, err := raft.NewRaft(raftCfg, kf, store, store, snapshots, transport)
 	if err != nil {
-		return nil, fmt.Errorf("Could not create raft instance: %w", err)
+		return nil, fmt.Errorf("Could not create raft instance: %s", err)
 	}
 
 	// Cluster consists of unjoined leaders. Picking a leader and
@@ -125,21 +131,21 @@ func (hs httpServer) setHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	bs, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Printf("Could not read key-value in http request: %w", err)
+		log.Printf("Could not read key-value in http request: %s", err)
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
 
 	future := hs.r.Apply(bs, 500*time.Millisecond)
 	if err := future.Error(); err != nil {
-		log.Printf("Could not write key-value: %w", err)
+		log.Printf("Could not write key-value: %s", err)
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
 
-	err = future.Response().(error)
-	if err != nil {
-		log.Printf("Could not write key-value: %w", err)
+	e := future.Response()
+	if e != nil {
+		log.Printf("Could not write key-value: %s", e)
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
@@ -150,7 +156,7 @@ func (hs httpServer) setHandler(w http.ResponseWriter, r *http.Request) {
 func (hs httpServer) getHandler(w http.ResponseWriter, r *http.Request) {
 	valBytes, closer, err := hs.db.Get([]byte(r.URL.Query().Get("key")))
 	if err != nil {
-		log.Printf("Could not encode key-value in http response: %w", err)
+		log.Printf("Could not encode key-value in http response: %s", err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
@@ -161,9 +167,32 @@ func (hs httpServer) getHandler(w http.ResponseWriter, r *http.Request) {
 	}{string(valBytes)}
 	err = json.NewEncoder(w).Encode(rsp)
 	if err != nil {
-		log.Printf("Could not encode key-value in http response: %w", err)
+		log.Printf("Could not encode key-value in http response: %s", err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}
+}
+
+func (hs httpServer) joinHandler(w http.ResponseWriter, r *http.Request) {
+	followerId := r.URL.Query().Get("followerId")
+	followerAddr := r.URL.Query().Get("followerAddr")
+
+	if hs.r.State() != raft.Leader {
+		json.NewEncoder(w).Encode(struct{
+			Error string `json:"error"`
+		}{
+			"Not the leader",
+		})
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	err := hs.r.AddVoter(raft.ServerID(followerId), raft.ServerAddress(followerAddr), 0, 0).Error()
+	if err != nil {
+		log.Printf("Failed to add follower: %s", err)
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+	}
+
+	w.WriteHeader(http.StatusOK)	
 }
 
 type config struct {
@@ -176,19 +205,19 @@ func getConfig() config {
 	cfg := config{}
 	for i, arg := range os.Args[1:] {
 		if arg == "--node-id" {
-			cfg.id = os.Args[i+1]
+			cfg.id = os.Args[i+2]
 			i++
 			continue
 		}
 
 		if arg == "--http-port" {
-			cfg.httpPort = os.Args[i+1]
+			cfg.httpPort = os.Args[i+2]
 			i++
 			continue
 		}
 
 		if arg == "--raft-port" {
-			cfg.raftPort = os.Args[i+1]
+			cfg.raftPort = os.Args[i+2]
 			i++
 			continue
 		}
@@ -212,14 +241,20 @@ func getConfig() config {
 func main() {
 	cfg := getConfig()
 
-	db, err := pebble.Open("data"+cfg.id, &pebble.Options{})
+	dataDir := "data"
+	err := os.MkdirAll(dataDir, os.ModePerm)
 	if err != nil {
-		log.Fatalf("Could not open pebble db: %w", err)
+		log.Fatalf("Could not create data directory: %s", err)
+	}
+
+	db, err := pebble.Open(path.Join(dataDir, "/data"+cfg.id), &pebble.Options{})
+	if err != nil {
+		log.Fatalf("Could not open pebble db: %s", err)
 	}
 
 	kf := &kvFsm{db}
 
-	r, err := setupRaft("raft"+cfg.id, cfg.id, cfg.raftPort, kf)
+	r, err := setupRaft(path.Join(dataDir, "raft"+cfg.id), cfg.id, "localhost:" + cfg.raftPort, kf)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -228,5 +263,6 @@ func main() {
 
 	http.HandleFunc("/set", hs.setHandler)
 	http.HandleFunc("/get", hs.getHandler)
+	http.HandleFunc("/join", hs.joinHandler)
 	http.ListenAndServe(":"+cfg.httpPort, nil)
 }
