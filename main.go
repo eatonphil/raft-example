@@ -29,7 +29,6 @@ func (kf *kvFsm) Apply(log *raft.Log) any {
 	switch log.Type {
 	case raft.LogCommand:
 		var sp setPayload
-		fmt.Println(string(log.Data))
 		err := json.Unmarshal(log.Data, &sp)
 		if err != nil {
 			return fmt.Errorf("Could not parse payload: %s", err)
@@ -177,7 +176,7 @@ func (hs httpServer) joinHandler(w http.ResponseWriter, r *http.Request) {
 	followerAddr := r.URL.Query().Get("followerAddr")
 
 	if hs.r.State() != raft.Leader {
-		json.NewEncoder(w).Encode(struct{
+		json.NewEncoder(w).Encode(struct {
 			Error string `json:"error"`
 		}{
 			"Not the leader",
@@ -192,7 +191,7 @@ func (hs httpServer) joinHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 	}
 
-	w.WriteHeader(http.StatusOK)	
+	w.WriteHeader(http.StatusOK)
 }
 
 type config struct {
@@ -254,7 +253,7 @@ func main() {
 
 	kf := &kvFsm{db}
 
-	r, err := setupRaft(path.Join(dataDir, "raft"+cfg.id), cfg.id, "localhost:" + cfg.raftPort, kf)
+	r, err := setupRaft(path.Join(dataDir, "raft"+cfg.id), cfg.id, "localhost:"+cfg.raftPort, kf)
 	if err != nil {
 		log.Fatal(err)
 	}
