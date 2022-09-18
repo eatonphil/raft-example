@@ -9,15 +9,15 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"sync"
 	"time"
 
-	"github.com/cockroachdb/pebble"
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-boltdb"
 )
 
 type kvFsm struct {
-	db *pebble.DB
+	db *sync.Map
 }
 
 type setPayload struct {
@@ -34,10 +34,7 @@ func (kf *kvFsm) Apply(log *raft.Log) any {
 			return fmt.Errorf("Could not parse payload: %s", err)
 		}
 
-		err = kf.db.Set([]byte(sp.Key), []byte(sp.Value), pebble.Sync)
-		if err != nil {
-			return fmt.Errorf("Could not set key-value: %s", err)
-		}
+		kf.db.Store(sp.Key, sp.Value)
 	default:
 		return fmt.Errorf("Unknown raft log type: %#v", log.Type)
 	}
@@ -67,10 +64,7 @@ func (kf *kvFsm) Restore(rc io.ReadCloser) error {
 			return fmt.Errorf("Could not decode payload: %s", err)
 		}
 
-		err = kf.db.Set([]byte(sp.Key), []byte(sp.Value), pebble.Sync)
-		if err != nil {
-			return fmt.Errorf("Could not set")
-		}
+		kf.db.Store(sp.Key, sp.Value)
 	}
 
 	return rc.Close()
@@ -122,8 +116,8 @@ func setupRaft(dir, nodeId, raftAddress string, kf *kvFsm) (*raft.Raft, error) {
 }
 
 type httpServer struct {
-	db *pebble.DB
 	r  *raft.Raft
+	db *sync.Map
 }
 
 func (hs httpServer) setHandler(w http.ResponseWriter, r *http.Request) {
@@ -153,18 +147,16 @@ func (hs httpServer) setHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (hs httpServer) getHandler(w http.ResponseWriter, r *http.Request) {
-	valBytes, closer, err := hs.db.Get([]byte(r.URL.Query().Get("key")))
-	if err != nil {
-		log.Printf("Could not encode key-value in http response: %s", err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
+	key := r.URL.Query().Get("key")
+	value, _ := hs.db.Load(key)
+	if value == nil {
+		value = ""
 	}
-	defer closer.Close()
 
 	rsp := struct {
 		Data string `json:"data"`
-	}{string(valBytes)}
-	err = json.NewEncoder(w).Encode(rsp)
+	}{value.(string)}
+	err := json.NewEncoder(w).Encode(rsp)
 	if err != nil {
 		log.Printf("Could not encode key-value in http response: %s", err)
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -246,11 +238,7 @@ func main() {
 		log.Fatalf("Could not create data directory: %s", err)
 	}
 
-	db, err := pebble.Open(path.Join(dataDir, "/data"+cfg.id), &pebble.Options{})
-	if err != nil {
-		log.Fatalf("Could not open pebble db: %s", err)
-	}
-
+	db := &sync.Map{}
 	kf := &kvFsm{db}
 
 	r, err := setupRaft(path.Join(dataDir, "raft"+cfg.id), cfg.id, "localhost:"+cfg.raftPort, kf)
@@ -258,7 +246,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	hs := httpServer{db, r}
+	hs := httpServer{r, db}
 
 	http.HandleFunc("/set", hs.setHandler)
 	http.HandleFunc("/get", hs.getHandler)
