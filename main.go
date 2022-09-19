@@ -138,7 +138,7 @@ func (hs httpServer) setHandler(w http.ResponseWriter, r *http.Request) {
 
 	e := future.Response()
 	if e != nil {
-		log.Printf("Could not write key-value: %s", e)
+		log.Printf("Could not write key-value, application: %s", e)
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
