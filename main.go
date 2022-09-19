@@ -232,14 +232,14 @@ func getConfig() config {
 func main() {
 	cfg := getConfig()
 
+	db := &sync.Map{}
+	kf := &kvFsm{db}
+
 	dataDir := "data"
 	err := os.MkdirAll(dataDir, os.ModePerm)
 	if err != nil {
 		log.Fatalf("Could not create data directory: %s", err)
 	}
-
-	db := &sync.Map{}
-	kf := &kvFsm{db}
 
 	r, err := setupRaft(path.Join(dataDir, "raft"+cfg.id), cfg.id, "localhost:"+cfg.raftPort, kf)
 	if err != nil {
