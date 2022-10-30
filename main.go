@@ -71,7 +71,10 @@ func (kf *kvFsm) Restore(rc io.ReadCloser) error {
 }
 
 func setupRaft(dir, nodeId, raftAddress string, kf *kvFsm) (*raft.Raft, error) {
-	os.MkdirAll(dir, os.ModePerm)
+	err := os.MkdirAll(dir, os.ModePerm)
+	if err != nil {
+		return nil, fmt.Errorf("Could not create data directory: %s", err)
+	}
 
 	store, err := raftboltdb.NewBoltStore(path.Join(dir, "bolt"))
 	if err != nil {
@@ -236,11 +239,6 @@ func main() {
 	kf := &kvFsm{db}
 
 	dataDir := "data"
-	err := os.MkdirAll(dataDir, os.ModePerm)
-	if err != nil {
-		log.Fatalf("Could not create data directory: %s", err)
-	}
-
 	r, err := setupRaft(path.Join(dataDir, "raft"+cfg.id), cfg.id, "localhost:"+cfg.raftPort, kf)
 	if err != nil {
 		log.Fatal(err)
